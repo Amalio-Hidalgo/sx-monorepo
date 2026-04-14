@@ -13,6 +13,8 @@ import { explorePageProtocols, getNetwork, offchainNetworks } from '@/networks';
 import { SNAPSHOT_URLS } from '@/networks/offchain';
 import { PROPOSALS_KEYS } from '@/queries/proposals';
 import { Proposal } from '@/types';
+import CodeChangeProposal from '@/components/CodeChange/CodeChangeProposal.vue';
+import type { CodeChangeData } from '@/components/CodeChange/CodeChangeProposal.vue';
 
 const WHITELISTED_SPACES: string[] = ['kleros.eth', 'gnosis.eth'];
 
@@ -50,6 +52,35 @@ const modalOpenTimeline = ref(false);
 const flagging = ref(false);
 const cancelling = ref(false);
 const aiSummaryOpen = ref(false);
+
+// Code change proposal detection
+const codeChangeData = computed((): CodeChangeData | null => {
+  const ccd = (props.proposal as any).codeChangeData;
+  if (!ccd) return null;
+  return {
+    repoUrl: ccd.attestation?.measurements?.repo_url || '',
+    branch: ccd.attestation?.measurements?.branch || '',
+    baseBranch: ccd.attestation?.measurements?.base_branch || '',
+    screenshots: {
+      before: ccd.screenshotsBefore || '',
+      after: ccd.screenshotsAfter || ''
+    },
+    attestation: ccd.attestation || null,
+    attestationStatus: ccd.attestation ? 'verified' : 'none',
+    compensation: ccd.compensation ? {
+      token: ccd.compensation.token || '',
+      amount: ccd.compensation.amount || '0',
+      recipient: ccd.compensation.recipient || ''
+    } : { token: '', amount: '0', recipient: '' },
+    codeReleaseStatus: ccd.codeReleaseStatus || 'hidden',
+    timelockEnd: ccd.timelockEnd || undefined
+  };
+});
+
+const isSpaceAdmin = computed(() => {
+  const admins = (props.proposal.space.admins || []) as string[];
+  return admins.some(a => compareAddresses(a, web3.value.account));
+});
 
 const flaggable = computed(() => {
   if (!offchainNetworks.includes(props.proposal.network)) return false;
@@ -549,6 +580,15 @@ onBeforeUnmount(() => destroyAudio());
           <IH-exclamation />
           AI can be inaccurate or misleading.
         </div>
+      </div>
+      <!-- Code Change Proposal section -->
+      <div v-if="codeChangeData" class="mb-8">
+        <CodeChangeProposal
+          :data="codeChangeData"
+          :proposal-id="proposal.id"
+          :proposal-state="proposal.state"
+          :is-admin="isSpaceAdmin"
+        />
       </div>
       <UiMarkdown v-if="proposal.body" class="mb-8" :body="proposal.body" />
       <div v-if="discussion">

@@ -19,6 +19,7 @@ import SpacePro from '@/views/Space/Pro.vue';
 import Space from '@/views/Space.vue';
 import Terms from '@/views/Terms.vue';
 import User from '@/views/User.vue';
+import CodeChangeDemo from '@/views/CodeChangeDemo.vue';
 import { spaceChildrenRoutes } from './common';
 import { orgRoute } from './organization';
 
@@ -94,6 +95,7 @@ export default [
       },
       { path: '/profile/:user', name: 'user', component: User },
       { path: '/pro', name: 'pro', component: SpacePro }
+,{ path: '/code-change-demo', name: 'code-change-demo', component: CodeChangeDemo }
     ]
   }
 ];
