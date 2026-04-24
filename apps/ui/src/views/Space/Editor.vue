@@ -13,7 +13,6 @@ import { usePropositionPowerQuery } from '@/queries/propositionPower';
 import { Contact, Space, Transaction, VoteType } from '@/types';
 import { TOTAL_NAV_HEIGHT } from '../../../tailwind.config';
 import EditorCodeChange, { type CodeChangeInput } from '@/components/Editor/EditorCodeChange.vue';
-import { useCodeChange } from '@/composables/useCodeChange';
 
 const DEFAULT_VOTING_DELAY = 60 * 60 * 24 * 3;
 
@@ -74,7 +73,6 @@ const sending = ref(false);
 const enforcedVoteType = ref<VoteType | null>(null);
 
 // Code Change Proposal state (local to this editor instance, not persisted in drafts)
-const { fetchGEProposal } = useCodeChange();
 const codeChange = ref<CodeChangeInput>({
   enabled: false,
   repoUrl: '',
