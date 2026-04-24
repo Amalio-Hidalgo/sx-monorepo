@@ -9,6 +9,9 @@ export type CodeChangeData = {
   repoUrl: string;
   branch: string;
   baseBranch: string;
+  baseCommit?: string;        // sealed-patch submissions
+  patchCommitment?: string;   // sha256 of sealed ciphertext
+  sealed?: boolean;           // true => source sealed inside enclave
   prNumber?: number;
   prTitle?: string;
   screenshots: {
@@ -38,6 +41,27 @@ function getRepoName(url: string): string {
 
 <template>
   <div class="space-y-6">
+    <!-- Source sealed banner (shown only for sealed submissions) -->
+    <div
+      v-if="data.sealed"
+      class="rounded-xl border border-purple-500/30 bg-purple-500/10 p-4 flex items-start gap-3"
+    >
+      <div class="size-10 rounded-lg bg-purple-500/20 text-purple-400 flex items-center justify-center shrink-0 text-lg">
+        🔒
+      </div>
+      <div class="flex-1 min-w-0">
+        <div class="font-semibold text-skin-link mb-1">Source code sealed</div>
+        <div class="text-sm text-skin-text leading-relaxed">
+          The patch was encrypted to the enclave's public key and decrypted inside the TEE only.
+          Voters evaluate the behavior preview below. The source is published after the vote passes
+          and the timelock expires.
+        </div>
+        <div v-if="data.patchCommitment" class="mt-2 text-xs font-mono text-skin-text break-all">
+          <span class="text-skin-text/60">patch commitment:</span> {{ data.patchCommitment }}
+        </div>
+      </div>
+    </div>
+
     <!-- GitHub Reference -->
     <div class="rounded-xl border border-skin-border bg-skin-bg p-4">
       <div class="flex items-start justify-between">
@@ -47,7 +71,9 @@ function getRepoName(url: string): string {
           </div>
           <div>
             <div class="flex items-center gap-2 mb-1">
-              <span class="text-sm text-skin-text">Code change from</span>
+              <span class="text-sm text-skin-text">
+                {{ data.sealed ? 'Base repo' : 'Code change from' }}
+              </span>
               <a
                 :href="data.repoUrl"
                 target="_blank"
@@ -57,7 +83,14 @@ function getRepoName(url: string): string {
                 {{ getRepoName(data.repoUrl) }}
               </a>
             </div>
-            <div v-if="data.prNumber" class="flex items-center gap-2">
+            <div v-if="data.sealed && data.baseCommit" class="flex items-center gap-2 text-sm">
+              <span class="text-skin-text">@</span>
+              <span class="font-mono text-xs px-1.5 py-0.5 rounded bg-skin-border text-skin-text">
+                {{ data.baseCommit.slice(0, 10) }}
+              </span>
+              <span class="text-skin-text">+ sealed patch</span>
+            </div>
+            <div v-else-if="data.prNumber" class="flex items-center gap-2">
               <a
                 :href="`${data.repoUrl}/pull/${data.prNumber}`"
                 target="_blank"

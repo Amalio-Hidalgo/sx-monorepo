@@ -99,6 +99,9 @@ const codeChangeData = computed((): CodeChangeData | null => {
     repoUrl: ccd.repo_url || ccd.attestation?.measurements?.repo_url || '',
     branch: ccd.pr_branch || ccd.attestation?.measurements?.branch || '',
     baseBranch: ccd.base_branch || ccd.attestation?.measurements?.base_branch || '',
+    baseCommit: ccd.base_commit || ccd.attestation?.measurements?.base_commit || undefined,
+    patchCommitment: ccd.patch_commitment || ccd.attestation?.measurements?.patch_commitment || undefined,
+    sealed: !!(ccd.sealed || ccd.patch_commitment || ccd.attestation?.measurements?.sealed),
     screenshots: {
       before: ccd.screenshotsBefore || '',
       after: ccd.screenshotsAfter || ''

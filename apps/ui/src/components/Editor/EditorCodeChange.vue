@@ -1,20 +1,18 @@
 <script setup lang="ts">
 /**
- * Editor section: Code Change Proposal.
+ * Editor section: Code Change Proposal (sealed submission).
  *
- * When enabled, after the user submits the proposal we POST to our /ge/proposal
- * backend to register the GitHub Execution data. The TEE service builds the PR
- * inside an Intel TDX enclave and produces a verified preview, which is rendered
- * automatically by Proposal/Overview.vue.
+ * Authors paste a git diff that gets encrypted client-side with libsodium
+ * sealed_box against the TEE enclave's public key. The plaintext never leaves
+ * the browser until it lands inside the enclave. Voters evaluate the behavior
+ * preview the TEE produces, not the source code.
  */
 
 export type CodeChangeInput = {
   enabled: boolean;
-  repoUrl: string;
-  prBranch: string;
-  baseBranch: string;
-  prNumber: string;
-  prTitle: string;
+  baseRepoUrl: string;
+  baseCommit: string;
+  patch: string;
   compensationAmount: string; // wei / atomic units
   compensationSymbol: string;
   compensationRecipient: string;
@@ -36,6 +34,10 @@ const local = computed({
 function update(field: keyof CodeChangeInput, value: any) {
   emit('update:modelValue', { ...local.value, [field]: value });
 }
+
+const patchLines = computed(() => local.value.patch.split('\n').length);
+const patchBytes = computed(() => new TextEncoder().encode(local.value.patch).length);
+const baseCommitValid = computed(() => /^[0-9a-fA-F]{40}$/.test(local.value.baseCommit));
 </script>
 
 <template>
@@ -48,21 +50,21 @@ function update(field: keyof CodeChangeInput, value: any) {
       <div class="flex items-center gap-2.5">
         <div
           class="size-8 rounded-lg flex items-center justify-center text-sm"
-          :class="local.enabled ? 'bg-green-500/15 text-green-500' : 'bg-skin-border/40 text-skin-text'"
+          :class="local.enabled ? 'bg-purple-500/15 text-purple-400' : 'bg-skin-border/40 text-skin-text'"
         >
           ⚙
         </div>
         <div>
-          <div class="text-sm font-semibold text-skin-link">Code Change</div>
+          <div class="text-sm font-semibold text-skin-link">Code Change (sealed)</div>
           <div class="text-xs text-skin-text">
-            <template v-if="local.enabled">TEE-verified preview will be attached</template>
-            <template v-else>Attach a GitHub PR + verified preview (off)</template>
+            <template v-if="local.enabled">Patch encrypted to the TEE enclave; source sealed during voting</template>
+            <template v-else>Submit an encrypted patch; voters see a verified preview, not the source</template>
           </div>
         </div>
       </div>
       <div
         class="size-9 rounded-full p-1 transition"
-        :class="local.enabled ? 'bg-green-500/30' : 'bg-skin-border/40'"
+        :class="local.enabled ? 'bg-purple-500/40' : 'bg-skin-border/40'"
       >
         <div
           class="size-7 rounded-full bg-white transition-transform"
@@ -73,57 +75,48 @@ function update(field: keyof CodeChangeInput, value: any) {
 
     <div v-if="local.enabled" class="border-t border-skin-border p-4 space-y-3">
       <div>
-        <UiEyebrow class="mb-1.5">GitHub Repo URL</UiEyebrow>
+        <UiEyebrow class="mb-1.5">Public base repo URL</UiEyebrow>
         <input
-          :value="local.repoUrl"
+          :value="local.baseRepoUrl"
           type="text"
           placeholder="https://github.com/owner/repo"
           class="s-input s-input-pill !w-full"
-          @input="(e: any) => update('repoUrl', e.target.value)"
+          @input="(e: any) => update('baseRepoUrl', e.target.value)"
         />
-      </div>
-      <div class="grid grid-cols-2 gap-3">
-        <div>
-          <UiEyebrow class="mb-1.5">PR Branch</UiEyebrow>
-          <input
-            :value="local.prBranch"
-            type="text"
-            placeholder="feat/my-change"
-            class="s-input s-input-pill !w-full"
-            @input="(e: any) => update('prBranch', e.target.value)"
-          />
-        </div>
-        <div>
-          <UiEyebrow class="mb-1.5">Base Branch</UiEyebrow>
-          <input
-            :value="local.baseBranch"
-            type="text"
-            placeholder="main"
-            class="s-input s-input-pill !w-full"
-            @input="(e: any) => update('baseBranch', e.target.value)"
-          />
+        <div class="text-xs text-skin-text mt-1">
+          The enclave checks out this repo at the exact commit below before applying your patch.
         </div>
       </div>
-      <div class="grid grid-cols-2 gap-3">
-        <div>
-          <UiEyebrow class="mb-1.5">PR Number (optional)</UiEyebrow>
-          <input
-            :value="local.prNumber"
-            type="number"
-            placeholder="1842"
-            class="s-input s-input-pill !w-full"
-            @input="(e: any) => update('prNumber', e.target.value)"
-          />
+
+      <div>
+        <UiEyebrow class="mb-1.5">Base commit (40-char SHA)</UiEyebrow>
+        <input
+          :value="local.baseCommit"
+          type="text"
+          placeholder="e.g. 9c8f5a2b1d4e7f6a3c5b8d9e2f1a4c7b6d9e3f5a"
+          class="s-input s-input-pill !w-full font-mono text-xs"
+          :class="local.baseCommit && !baseCommitValid ? '!border-red-500' : ''"
+          @input="(e: any) => update('baseCommit', e.target.value.trim())"
+        />
+        <div class="text-xs mt-1" :class="local.baseCommit && !baseCommitValid ? 'text-red-400' : 'text-skin-text'">
+          <template v-if="local.baseCommit && !baseCommitValid">Must be a 40-char hex SHA</template>
+          <template v-else>Pin the exact commit your patch applies against — the enclave verifies this.</template>
         </div>
-        <div>
-          <UiEyebrow class="mb-1.5">PR Title (optional)</UiEyebrow>
-          <input
-            :value="local.prTitle"
-            type="text"
-            placeholder="Short description"
-            class="s-input s-input-pill !w-full"
-            @input="(e: any) => update('prTitle', e.target.value)"
-          />
+      </div>
+
+      <div>
+        <UiEyebrow class="mb-1.5">Patch (git diff output)</UiEyebrow>
+        <textarea
+          :value="local.patch"
+          rows="10"
+          placeholder="diff --git a/file.txt b/file.txt&#10;index abc..def 100644&#10;--- a/file.txt&#10;+++ b/file.txt&#10;@@ -1 +1 @@&#10;-old&#10;+new"
+          class="s-input s-input-pill !w-full font-mono text-xs !rounded-lg !py-2 !px-3"
+          style="resize: vertical"
+          @input="(e: any) => update('patch', e.target.value)"
+        />
+        <div class="text-xs text-skin-text mt-1">
+          Paste the output of <code class="s-input-mono">git diff {{ local.baseCommit ? local.baseCommit.slice(0, 7) + '..HEAD' : 'BASE..HEAD' }}</code>.
+          <span v-if="local.patch">{{ patchLines }} lines, {{ patchBytes }} bytes — encrypted client-side before upload.</span>
         </div>
       </div>
 
@@ -166,9 +159,11 @@ function update(field: keyof CodeChangeInput, value: any) {
       </div>
 
       <div class="text-xs text-skin-text leading-relaxed pt-2">
-        Once the proposal is created, the TEE service clones the repo, builds the PR inside an
-        Intel TDX enclave, and posts the signed attestation + screenshots to this proposal page.
-        Voters see the verified preview alongside voting.
+        <span class="text-purple-400 font-semibold">Sealed submission:</span>
+        your patch is encrypted in the browser against the enclave's published public key.
+        The enclave decrypts it internally, applies it on the base commit, and produces a signed
+        TEE attestation + verified preview. Source stays sealed until the vote passes and the
+        timelock expires.
       </div>
     </div>
   </div>

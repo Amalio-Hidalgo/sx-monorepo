@@ -75,39 +75,76 @@ const enforcedVoteType = ref<VoteType | null>(null);
 // Code Change Proposal state (local to this editor instance, not persisted in drafts)
 const codeChange = ref<CodeChangeInput>({
   enabled: false,
-  repoUrl: '',
-  prBranch: '',
-  baseBranch: 'main',
-  prNumber: '',
-  prTitle: '',
+  baseRepoUrl: '',
+  baseCommit: '',
+  patch: '',
   compensationAmount: '0',
   compensationSymbol: 'USDC',
   compensationRecipient: '',
 });
 
+const TEE_URL = (import.meta as any).env.VITE_TEE_SERVICE_URL
+  || 'https://7d07828e6b5e823257fd7aa98edce140dd92272d-3000.dstack-pha-prod5.phala.network';
+const SNAPSHOT_X_API = (import.meta as any).env.VITE_SNAPSHOT_X_API
+  || 'https://testnet-api.snapshot.box';
+
 /**
- * After Snapshot proposal creation succeeds, register the GitHub Execution data
- * with our TEE backend. The TEE service then clones, builds, attests, and the
- * preview appears on the proposal page automatically (via Proposal/Overview's poll).
- *
- * We poll the indexer briefly to find the new proposal_id, since propose() returns
- * only the tx hash.
+ * Client-side sealing: encrypt the patch to the enclave's x25519 pubkey using
+ * libsodium sealed_box. The plaintext never leaves this browser.
  */
-async function registerCodeChange(spaceId: string) {
+async function sealPatch(patch: string, enclavePubkeyB64: string): Promise<string> {
+  // libsodium-wrappers default export is the ready-to-use sodium singleton.
+  const sodium = (await import('libsodium-wrappers')).default;
+  await sodium.ready;
+  const pubkey = sodium.from_base64(enclavePubkeyB64, sodium.base64_variants.ORIGINAL);
+  const plain = new TextEncoder().encode(patch);
+  const ct = sodium.crypto_box_seal(plain, pubkey);
+  return sodium.to_base64(ct, sodium.base64_variants.ORIGINAL);
+}
+
+/**
+ * After Snapshot proposal creation succeeds, submit the encrypted patch to the
+ * TEE enclave. The TEE decrypts inside, applies the patch on the base commit,
+ * builds, and posts the signed attestation to the proposal page.
+ *
+ * Voters never see the patch plaintext during voting — they see screenshots +
+ * attestation + patch commitment hash.
+ */
+async function submitSealedCodeChange(spaceId: string) {
   if (!codeChange.value.enabled) return;
-  if (!codeChange.value.repoUrl || !codeChange.value.prBranch) {
-    uiStore.addNotification('error', 'Code Change is enabled but repo URL or branch is empty');
+  const cc = codeChange.value;
+  if (!cc.baseRepoUrl.trim()) {
+    uiStore.addNotification('error', 'Code Change: base repo URL is required');
+    return;
+  }
+  if (!/^[0-9a-fA-F]{40}$/.test(cc.baseCommit.trim())) {
+    uiStore.addNotification('error', 'Code Change: base_commit must be a 40-char hex SHA');
+    return;
+  }
+  if (!cc.patch.trim()) {
+    uiStore.addNotification('error', 'Code Change: patch is empty');
     return;
   }
 
-  // Poll the indexer for the new proposal (1 ID higher than what existed before)
-  // Up to ~60s
+  // 1. Fetch the enclave's public key (and attestation — proves the key belongs
+  // to a real TEE)
+  let enclavePubkey: string;
+  try {
+    const r = await fetch(`${TEE_URL}/attestation`);
+    const att = await r.json();
+    if (!att.enclave_pubkey) throw new Error('TEE /attestation did not return enclave_pubkey');
+    enclavePubkey = att.enclave_pubkey;
+  } catch (e: any) {
+    uiStore.addNotification('error', `TEE unreachable: ${e.message}`);
+    return;
+  }
+
+  // 2. Poll Snapshot X indexer for the new proposal ID
   uiStore.addNotification('success', 'Looking up new proposal in indexer...');
   let snapshotProposalId: string | null = null;
-  const apiUrl = (import.meta as any).env.VITE_SNAPSHOT_X_API || 'https://testnet-api.snapshot.box';
   for (let i = 0; i < 12; i++) {
     try {
-      const r = await fetch(apiUrl, {
+      const r = await fetch(SNAPSHOT_X_API, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -127,41 +164,51 @@ async function registerCodeChange(spaceId: string) {
     } catch {}
     await new Promise(res => setTimeout(res, 5000));
   }
-
   if (!snapshotProposalId) {
-    uiStore.addNotification('error', 'Could not find new proposal in indexer; register manually');
+    uiStore.addNotification('error', 'Could not find new proposal in indexer; patch not submitted');
     return;
   }
 
-  // POST to /ge/proposal
-  const teeUrl = (import.meta as any).env.VITE_TEE_SERVICE_URL
-    || 'https://7d07828e6b5e823257fd7aa98edce140dd92272d-3000.dstack-pha-prod5.phala.network';
+  // 3. Encrypt patch client-side
+  let ciphertext: string;
   try {
-    const resp = await fetch(`${teeUrl}/ge/proposal`, {
+    ciphertext = await sealPatch(cc.patch, enclavePubkey);
+  } catch (e: any) {
+    uiStore.addNotification('error', `Sealing failed: ${e.message}`);
+    return;
+  }
+
+  // 4. POST to /ge/submit-sealed-patch
+  try {
+    const resp = await fetch(`${TEE_URL}/ge/submit-sealed-patch`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        snapshot_proposal_id: snapshotProposalId,
+        ciphertext,
+        base_repo: cc.baseRepoUrl.trim(),
+        base_commit: cc.baseCommit.trim(),
+        metadata: { title: proposal.value.title },
+        compensation: {
+          token_symbol: cc.compensationSymbol || 'USDC',
+          amount: cc.compensationAmount || '0',
+          recipient: cc.compensationRecipient || web3.value.account || '',
+        },
         snapshot_space: spaceId,
+        snapshot_proposal_id: snapshotProposalId,
         snapshot_network: 'sep',
-        repo_url: codeChange.value.repoUrl.trim(),
-        pr_branch: codeChange.value.prBranch.trim(),
-        base_branch: codeChange.value.baseBranch.trim() || 'main',
-        pr_number: codeChange.value.prNumber ? Number(codeChange.value.prNumber) : undefined,
-        pr_title: codeChange.value.prTitle || undefined,
-        compensation_token_symbol: codeChange.value.compensationSymbol || 'USDC',
-        compensation_amount_wei: codeChange.value.compensationAmount || '0',
-        compensation_recipient:
-          codeChange.value.compensationRecipient || web3.value.account || '',
       }),
     });
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
       throw new Error(err.error || `HTTP ${resp.status}`);
     }
-    uiStore.addNotification('success', 'TEE build started — preview will appear on the proposal page');
+    const body = await resp.json();
+    uiStore.addNotification(
+      'success',
+      `Patch sealed and accepted — commitment ${body.patch_commitment.slice(0, 12)}…`
+    );
   } catch (e: any) {
-    uiStore.addNotification('error', `GE registration failed: ${e.message}`);
+    uiStore.addNotification('error', `Sealed submit failed: ${e.message}`);
   }
 }
 
@@ -507,7 +554,7 @@ async function handleProposeClick() {
         // Fire-and-forget: register Code Change with our TEE backend.
         // We await it so the user sees the "TEE build started" notification before
         // they leave the editor, but errors don't fail the proposal flow.
-        await registerCodeChange(props.space.id);
+        await submitSealedCodeChange(props.space.id);
       }
     }
     if (result) {
