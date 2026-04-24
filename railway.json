@@ -1,0 +1,12 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "builder": "NIXPACKS",
+    "buildCommand": "bun install --no-progress && bun run --cwd packages/tune build && bun run --cwd packages/sx.js build && bun run --cwd apps/ui build"
+  },
+  "deploy": {
+    "startCommand": "cd apps/ui && npx serve dist -l $PORT --single",
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 3
+  }
+}
