@@ -15,6 +15,7 @@ import { PROPOSALS_KEYS } from '@/queries/proposals';
 import { Proposal } from '@/types';
 import CodeChangeProposal from '@/components/CodeChange/CodeChangeProposal.vue';
 import type { CodeChangeData } from '@/components/CodeChange/CodeChangeProposal.vue';
+import { useCodeChange } from '@/composables/useCodeChange';
 
 const WHITELISTED_SPACES: string[] = ['kleros.eth', 'gnosis.eth'];
 
@@ -54,26 +55,61 @@ const cancelling = ref(false);
 const aiSummaryOpen = ref(false);
 
 // Code change proposal detection
+// Source: our Phala TEE backend at /ge/proposal/:snapshot_proposal_id
+// Returns null for non-code-change proposals (404 from backend).
+// Polls every 5s while a build is in progress.
+const { fetchGEProposal } = useCodeChange();
+const geRaw = ref<any>(null);
+let gePollTimer: ReturnType<typeof setInterval> | null = null;
+
+async function refreshGE() {
+  try {
+    const id = String(props.proposal.proposal_id ?? props.proposal.id ?? '');
+    if (!id) return;
+    geRaw.value = await fetchGEProposal(id);
+  } catch (e) {
+    console.warn('refreshGE failed:', e);
+  }
+}
+
+watch(
+  () => props.proposal.id,
+  () => { refreshGE(); },
+  { immediate: true }
+);
+
+watchEffect(() => {
+  // Poll while build is still running so the section auto-updates
+  if (gePollTimer) { clearInterval(gePollTimer); gePollTimer = null; }
+  const buildStatus = geRaw.value?.build_status;
+  const geState = geRaw.value?.ge_state;
+  if (geState === 'building' || buildStatus === 'queued' || buildStatus === 'running') {
+    gePollTimer = setInterval(refreshGE, 5000);
+  }
+});
+
+onBeforeUnmount(() => {
+  if (gePollTimer) clearInterval(gePollTimer);
+});
+
 const codeChangeData = computed((): CodeChangeData | null => {
-  const ccd = (props.proposal as any).codeChangeData;
+  const ccd = geRaw.value;
   if (!ccd) return null;
   return {
-    repoUrl: ccd.attestation?.measurements?.repo_url || '',
-    branch: ccd.attestation?.measurements?.branch || '',
-    baseBranch: ccd.attestation?.measurements?.base_branch || '',
+    repoUrl: ccd.repo_url || ccd.attestation?.measurements?.repo_url || '',
+    branch: ccd.pr_branch || ccd.attestation?.measurements?.branch || '',
+    baseBranch: ccd.base_branch || ccd.attestation?.measurements?.base_branch || '',
     screenshots: {
       before: ccd.screenshotsBefore || '',
       after: ccd.screenshotsAfter || ''
     },
     attestation: ccd.attestation || null,
-    attestationStatus: ccd.attestation ? 'verified' : 'none',
+    attestationStatus: ccd.attestation ? 'verified' : (ccd.ge_state === 'building' ? 'pending' : 'none'),
     compensation: ccd.compensation ? {
       token: ccd.compensation.token || '',
       amount: ccd.compensation.amount || '0',
       recipient: ccd.compensation.recipient || ''
-    } : { token: '', amount: '0', recipient: '' },
-    codeReleaseStatus: ccd.codeReleaseStatus || 'hidden',
-    timelockEnd: ccd.timelockEnd || undefined
+    } : { token: '', amount: '0', recipient: '' }
   };
 });
 

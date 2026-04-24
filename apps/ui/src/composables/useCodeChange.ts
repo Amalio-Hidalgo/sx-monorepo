@@ -1,6 +1,6 @@
 import { ref, computed } from 'vue';
 
-const DEFAULT_TEE_URL = 'https://tee-build-production.up.railway.app';
+const DEFAULT_TEE_URL = import.meta.env.VITE_TEE_SERVICE_URL || 'https://7d07828e6b5e823257fd7aa98edce140dd92272d-3000.dstack-pha-prod5.phala.network';
 const DEFAULT_HUB_URL = import.meta.env.VITE_HUB_URL || 'https://snapshot-hub-production-9e71.up.railway.app';
 
 export type BuildJob = {
@@ -195,6 +195,57 @@ export function useCodeChange(teeUrl?: string) {
     return res.json();
   }
 
+  /**
+   * Fetch GitHub Execution data for a Snapshot proposal from our Phala TEE backend.
+   *
+   * Returns null if the proposal has no GE record (i.e. it's a regular proposal,
+   * not a code-change one). Returns the codeChangeData shape that
+   * Proposal/Overview.vue + CodeChangeProposal.vue expect.
+   */
+  async function fetchGEProposal(snapshotProposalId: string | number): Promise<any | null> {
+    try {
+      const res = await fetch(`${serviceUrl.value}/ge/proposal/${snapshotProposalId}`);
+      if (res.status === 404) return null;
+      if (!res.ok) return null;
+      const data = await res.json();
+      const p = data.proposal;
+      if (!p) return null;
+
+      const buildResult = p.build?.result;
+      const attestation = buildResult?.attestation || null;
+      const screenshots = buildResult?.screenshots || null;
+
+      // Map our backend shape to the codeChangeData shape Proposal/Overview consumes
+      return {
+        // Required by Proposal/Overview's computed
+        attestation,
+        screenshotsBefore: screenshots?.before || '',
+        screenshotsAfter: screenshots?.after || '',
+        compensation: {
+          token: p.compensation.symbol,
+          amount: p.compensation.amount_wei,
+          recipient: p.compensation.recipient,
+        },
+        codeReleaseStatus:
+          p.ge_state === 'released' ? 'released' :
+          p.ge_state === 'vetoed' ? 'vetoed' :
+          'hidden',
+        timelockEnd: p.escrow_create_tx ? Math.floor(Date.now() / 1000) + p.timelock_seconds : null,
+        // Bonus fields useful for the section
+        ge_state: p.ge_state,
+        build_status: p.build?.status,
+        build_progress: p.build?.progress,
+        build_log: p.build?.log,
+        repo_url: p.repo_url,
+        pr_branch: p.pr_branch,
+        base_branch: p.base_branch,
+      };
+    } catch (e) {
+      console.warn('fetchGEProposal failed:', e);
+      return null;
+    }
+  }
+
   return {
     serviceUrl,
     jobId,
@@ -210,6 +261,7 @@ export function useCodeChange(teeUrl?: string) {
     verifyAttestation,
     setCodeChangeData,
     releaseCode,
-    vetoProposal
+    vetoProposal,
+    fetchGEProposal
   };
 }

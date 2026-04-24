@@ -255,8 +255,8 @@ defineExpose({ codeChangePayload });
       </div>
 
       <ScreenshotPreview
-        :before-src="screenshots.before"
-        :after-src="screenshots.after"
+        :before-url="screenshots.before"
+        :after-url="screenshots.after"
         repo-url=""
         branch=""
         base-branch=""
