@@ -112,7 +112,13 @@ const codeChangeData = computed((): CodeChangeData | null => {
       token: ccd.compensation.token || '',
       amount: ccd.compensation.amount || '0',
       recipient: ccd.compensation.recipient || ''
-    } : { token: '', amount: '0', recipient: '' }
+    } : { token: '', amount: '0', recipient: '' },
+    build: {
+      status: ccd.build_status,
+      progress: ccd.build_progress,
+      log: ccd.build_log,
+      error: ccd.build_error || null,
+    }
   };
 });
 

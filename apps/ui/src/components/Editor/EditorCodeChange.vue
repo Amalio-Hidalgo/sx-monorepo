@@ -38,6 +38,45 @@ function update(field: keyof CodeChangeInput, value: any) {
 const patchLines = computed(() => local.value.patch.split('\n').length);
 const patchBytes = computed(() => new TextEncoder().encode(local.value.patch).length);
 const baseCommitValid = computed(() => /^[0-9a-fA-F]{40}$/.test(local.value.baseCommit));
+
+// "Use latest HEAD" — resolve the default-branch tip via GitHub's public API so
+// users don't have to copy a SHA manually. We try `main` then fall back to
+// `master` (and finally the repo's own `default_branch`).
+const headLoading = ref(false);
+const headError = ref<string | null>(null);
+
+function parseOwnerRepo(url: string): { owner: string; repo: string } | null {
+  const m = url.trim().match(/github\.com[/:]([^/]+)\/([^/]+?)(?:\.git)?(?:[/?#]|$)/);
+  if (!m) return null;
+  return { owner: m[1], repo: m[2] };
+}
+
+async function fetchLatestHead() {
+  headError.value = null;
+  const or = parseOwnerRepo(local.value.baseRepoUrl);
+  if (!or) { headError.value = 'Enter a github.com URL first'; return; }
+  headLoading.value = true;
+  try {
+    // 1. Get the default branch name
+    const repoRes = await fetch(`https://api.github.com/repos/${or.owner}/${or.repo}`);
+    if (!repoRes.ok) throw new Error(`repo lookup failed (${repoRes.status})`);
+    const repoData = await repoRes.json();
+    const branch = repoData.default_branch || 'main';
+    // 2. Get the HEAD commit of that branch
+    const refRes = await fetch(
+      `https://api.github.com/repos/${or.owner}/${or.repo}/commits/${branch}`
+    );
+    if (!refRes.ok) throw new Error(`HEAD lookup failed (${refRes.status})`);
+    const refData = await refRes.json();
+    const sha = refData.sha as string | undefined;
+    if (!sha || !/^[0-9a-f]{40}$/.test(sha)) throw new Error('no SHA in response');
+    update('baseCommit', sha);
+  } catch (e: any) {
+    headError.value = e.message || String(e);
+  } finally {
+    headLoading.value = false;
+  }
+}
 </script>
 
 <template>
@@ -90,16 +129,28 @@ const baseCommitValid = computed(() => /^[0-9a-fA-F]{40}$/.test(local.value.base
 
       <div>
         <UiEyebrow class="mb-1.5">Base commit (40-char SHA)</UiEyebrow>
-        <input
-          :value="local.baseCommit"
-          type="text"
-          placeholder="e.g. 9c8f5a2b1d4e7f6a3c5b8d9e2f1a4c7b6d9e3f5a"
-          class="s-input s-input-pill !w-full font-mono text-xs"
-          :class="local.baseCommit && !baseCommitValid ? '!border-red-500' : ''"
-          @input="(e: any) => update('baseCommit', e.target.value.trim())"
-        />
-        <div class="text-xs mt-1" :class="local.baseCommit && !baseCommitValid ? 'text-red-400' : 'text-skin-text'">
-          <template v-if="local.baseCommit && !baseCommitValid">Must be a 40-char hex SHA</template>
+        <div class="flex gap-2">
+          <input
+            :value="local.baseCommit"
+            type="text"
+            placeholder="e.g. 9c8f5a2b1d4e7f6a3c5b8d9e2f1a4c7b6d9e3f5a"
+            class="s-input s-input-pill !w-full font-mono text-xs"
+            :class="local.baseCommit && !baseCommitValid ? '!border-red-500' : ''"
+            @input="(e: any) => update('baseCommit', e.target.value.trim())"
+          />
+          <button
+            type="button"
+            class="px-3 text-xs rounded-full border border-skin-border bg-skin-bg hover:bg-skin-border/40 whitespace-nowrap disabled:opacity-50"
+            :disabled="headLoading || !local.baseRepoUrl"
+            title="Fetch the HEAD of the repo's default branch from GitHub"
+            @click="fetchLatestHead"
+          >
+            {{ headLoading ? 'Fetching…' : 'Use latest HEAD' }}
+          </button>
+        </div>
+        <div class="text-xs mt-1" :class="headError || (local.baseCommit && !baseCommitValid) ? 'text-red-400' : 'text-skin-text'">
+          <template v-if="headError">{{ headError }}</template>
+          <template v-else-if="local.baseCommit && !baseCommitValid">Must be a 40-char hex SHA</template>
           <template v-else>Pin the exact commit your patch applies against — the enclave verifies this.</template>
         </div>
       </div>

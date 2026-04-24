@@ -4,6 +4,7 @@ import type { Attestation, AttestationStatus } from './AttestationBadge.vue';
 import ScreenshotPreview from './ScreenshotPreview.vue';
 import CompensationTerms from './CompensationTerms.vue';
 import type { CompensationInfo } from './CompensationTerms.vue';
+import BuildProgress from './BuildProgress.vue';
 
 export type CodeChangeData = {
   repoUrl: string;
@@ -25,6 +26,13 @@ export type CodeChangeData = {
     filesChanged: number;
     additions: number;
     deletions: number;
+  };
+  // While the TEE is still running — shown instead of screenshots
+  build?: {
+    status?: string;
+    progress?: number;
+    log?: string[];
+    error?: string | null;
   };
 };
 
@@ -123,13 +131,21 @@ function getRepoName(url: string): string {
       :attestation="data.attestation"
     />
 
-    <!-- Screenshot Preview -->
+    <!-- Screenshot Preview (or build progress while TEE still running) -->
     <div>
       <UiEyebrow class="mb-3 flex items-center gap-2">
         <IH-photograph />
         TEE-Verified Preview
       </UiEyebrow>
+      <BuildProgress
+        v-if="data.build && data.build.status !== 'complete'"
+        :status="data.build.status"
+        :progress="data.build.progress"
+        :log="data.build.log"
+        :error="data.build.error"
+      />
       <ScreenshotPreview
+        v-else
         :before-url="data.screenshots.before"
         :after-url="data.screenshots.after"
         before-label="Current"
