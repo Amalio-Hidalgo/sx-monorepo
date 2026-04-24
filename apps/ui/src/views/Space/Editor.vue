@@ -12,6 +12,8 @@ import { PROPOSALS_KEYS } from '@/queries/proposals';
 import { usePropositionPowerQuery } from '@/queries/propositionPower';
 import { Contact, Space, Transaction, VoteType } from '@/types';
 import { TOTAL_NAV_HEIGHT } from '../../../tailwind.config';
+import EditorCodeChange, { type CodeChangeInput } from '@/components/Editor/EditorCodeChange.vue';
+import { useCodeChange } from '@/composables/useCodeChange';
 
 const DEFAULT_VOTING_DELAY = 60 * 60 * 24 * 3;
 
@@ -70,6 +72,100 @@ const modalOpenTerms = ref(false);
 const { modalAccountOpen } = useModal();
 const sending = ref(false);
 const enforcedVoteType = ref<VoteType | null>(null);
+
+// Code Change Proposal state (local to this editor instance, not persisted in drafts)
+const { fetchGEProposal } = useCodeChange();
+const codeChange = ref<CodeChangeInput>({
+  enabled: false,
+  repoUrl: '',
+  prBranch: '',
+  baseBranch: 'main',
+  prNumber: '',
+  prTitle: '',
+  compensationAmount: '0',
+  compensationSymbol: 'USDC',
+  compensationRecipient: '',
+});
+
+/**
+ * After Snapshot proposal creation succeeds, register the GitHub Execution data
+ * with our TEE backend. The TEE service then clones, builds, attests, and the
+ * preview appears on the proposal page automatically (via Proposal/Overview's poll).
+ *
+ * We poll the indexer briefly to find the new proposal_id, since propose() returns
+ * only the tx hash.
+ */
+async function registerCodeChange(spaceId: string) {
+  if (!codeChange.value.enabled) return;
+  if (!codeChange.value.repoUrl || !codeChange.value.prBranch) {
+    uiStore.addNotification('error', 'Code Change is enabled but repo URL or branch is empty');
+    return;
+  }
+
+  // Poll the indexer for the new proposal (1 ID higher than what existed before)
+  // Up to ~60s
+  uiStore.addNotification('success', 'Looking up new proposal in indexer...');
+  let snapshotProposalId: string | null = null;
+  const apiUrl = (import.meta as any).env.VITE_SNAPSHOT_X_API || 'https://testnet-api.snapshot.box';
+  for (let i = 0; i < 12; i++) {
+    try {
+      const r = await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query: `{
+            proposals(first: 1, where: { space: "${spaceId}" }, orderBy: created, orderDirection: desc) {
+              proposal_id author { id }
+            }
+          }`,
+        }),
+      });
+      const data = await r.json();
+      const latest = data?.data?.proposals?.[0];
+      if (latest?.author?.id?.toLowerCase() === web3.value.account?.toLowerCase()) {
+        snapshotProposalId = latest.proposal_id;
+        break;
+      }
+    } catch {}
+    await new Promise(res => setTimeout(res, 5000));
+  }
+
+  if (!snapshotProposalId) {
+    uiStore.addNotification('error', 'Could not find new proposal in indexer; register manually');
+    return;
+  }
+
+  // POST to /ge/proposal
+  const teeUrl = (import.meta as any).env.VITE_TEE_SERVICE_URL
+    || 'https://7d07828e6b5e823257fd7aa98edce140dd92272d-3000.dstack-pha-prod5.phala.network';
+  try {
+    const resp = await fetch(`${teeUrl}/ge/proposal`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        snapshot_proposal_id: snapshotProposalId,
+        snapshot_space: spaceId,
+        snapshot_network: 'sep',
+        repo_url: codeChange.value.repoUrl.trim(),
+        pr_branch: codeChange.value.prBranch.trim(),
+        base_branch: codeChange.value.baseBranch.trim() || 'main',
+        pr_number: codeChange.value.prNumber ? Number(codeChange.value.prNumber) : undefined,
+        pr_title: codeChange.value.prTitle || undefined,
+        compensation_token_symbol: codeChange.value.compensationSymbol || 'USDC',
+        compensation_amount_wei: codeChange.value.compensationAmount || '0',
+        compensation_recipient:
+          codeChange.value.compensationRecipient || web3.value.account || '',
+      }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.error || `HTTP ${resp.status}`);
+    }
+    uiStore.addNotification('success', 'TEE build started — preview will appear on the proposal page');
+  } catch (e: any) {
+    uiStore.addNotification('error', `GE registration failed: ${e.message}`);
+  }
+}
 
 const nonPremiumNetworksList = computed(() => {
   const networks = alerts.value.get('HAS_PRO_ONLY_NETWORKS')?.networks;
@@ -410,6 +506,10 @@ async function handleProposeClick() {
 
       if (result) {
         uiStore.addNotification('success', 'Proposal created successfully.');
+        // Fire-and-forget: register Code Change with our TEE backend.
+        // We await it so the user sees the "TEE build started" notification before
+        // they leave the editor, but errors don't fail the proposal flow.
+        await registerCodeChange(props.space.id);
       }
     }
     if (result) {
@@ -802,6 +902,12 @@ watchEffect(() => {
                 value => handleExecutionUpdated(execution.address, value)
               "
             />
+          </div>
+
+          <!-- GitHub Execution: Code Change Proposal -->
+          <div class="mt-4">
+            <UiEyebrow class="mb-2">GitHub Execution</UiEyebrow>
+            <EditorCodeChange v-model="codeChange" />
           </div>
         </UiContainer>
       </div>
