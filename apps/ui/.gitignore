@@ -23,6 +23,8 @@ auto-imports.d.ts
 *.sln
 *.sw?
 
-gql
+# gql/ codegen output - committed (with git add -f) so Railway deploys can use it
+# Regenerate locally with: bun run codegen
+# gql
 
 storybook-static
