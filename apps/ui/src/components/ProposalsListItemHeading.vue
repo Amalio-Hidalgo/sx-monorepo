@@ -9,11 +9,18 @@ const props = withDefaults(
     showSpace?: boolean;
     showAuthor?: boolean;
     showVotedIndicator?: boolean;
+    codeChange?: {
+      ge_state?: string;
+      sealed?: boolean;
+      patch_commitment?: string;
+      build_status?: string;
+    } | null;
   }>(),
   {
     showSpace: true,
     showAuthor: true,
-    showVotedIndicator: true
+    showVotedIndicator: true,
+    codeChange: null
   }
 );
 
@@ -84,6 +91,13 @@ const hasVoted = computed(
             with-link
           />
         </AppLink>
+        <CodeChangeBadge
+          v-if="codeChange"
+          :ge-state="codeChange.ge_state"
+          :sealed="codeChange.sealed"
+          :build-status="codeChange.build_status"
+          class="align-middle"
+        />
       </div>
     </div>
     <div class="inline">

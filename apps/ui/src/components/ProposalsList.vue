@@ -12,6 +12,17 @@ const props = withDefaults(
     proposals: ProposalType[];
     showSpace?: boolean;
     showAuthor?: boolean;
+    /**
+     * Map of proposal_id -> code-change summary for the Snapshot X proposals
+     * in this list that also have a GitHub Execution entry. Renders a small
+     * badge next to the title when provided.
+     */
+    codeChangeIndex?: Map<string, {
+      ge_state?: string;
+      sealed?: boolean;
+      patch_commitment?: string;
+      build_status?: string;
+    }>;
     route?: {
       name: string;
       params?: RouteParams;
@@ -53,6 +64,7 @@ const currentLimit = computed(() => {
           :proposal="proposal"
           :show-space="showSpace"
           :show-author="showAuthor"
+          :code-change="codeChangeIndex?.get(String(proposal.proposal_id)) || null"
         >
           <template #meta>
             <slot name="item-meta" :proposal="proposal" />

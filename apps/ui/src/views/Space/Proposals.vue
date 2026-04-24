@@ -5,6 +5,7 @@ import { getOrgProposalLabel } from '@/helpers/organizations';
 import { ProposalsFilter } from '@/networks/types';
 import { useProposalsQuery } from '@/queries/proposals';
 import { useSpaceVotingPowerQuery } from '@/queries/votingPower';
+import { useCodeChange } from '@/composables/useCodeChange';
 import { Space } from '@/types';
 
 const props = defineProps<{ space: Space }>();
@@ -123,6 +124,21 @@ watch(
 );
 
 watchEffect(() => setTitle(`${proposalsLabel.value} - ${props.space.name}`));
+
+// Fetch the GitHub Execution index for this space so the list can badge which
+// Snapshot X proposals are code-change proposals. One request per mount/space
+// change; visible proposals look themselves up in the map.
+const { fetchGEProposalsForSpace } = useCodeChange();
+const codeChangeIndex = ref(new Map<string, any>());
+watch(
+  () => props.space.id,
+  async id => {
+    if (!id) return;
+    codeChangeIndex.value = await fetchGEProposalsForSpace(id);
+  },
+  { immediate: true }
+);
+const geCount = computed(() => codeChangeIndex.value.size);
 </script>
 
 <template>
@@ -241,7 +257,15 @@ watchEffect(() => setTitle(`${proposalsLabel.value} - ${props.space.name}`));
       :loading="isPending"
       :loading-more="isFetchingNextPage"
       :proposals="data?.pages.flat() ?? []"
+      :code-change-index="codeChangeIndex"
       @end-reached="handleEndReached"
     />
+    <div
+      v-if="geCount > 0"
+      class="px-4 py-2 text-xs text-skin-text border-t border-skin-border/50"
+    >
+      <span class="inline-block mr-1">🔒</span>
+      {{ geCount }} {{ geCount === 1 ? 'proposal includes' : 'proposals include' }} a TEE-verified code change.
+    </div>
   </div>
 </template>

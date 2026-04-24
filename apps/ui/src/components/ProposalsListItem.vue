@@ -5,6 +5,12 @@ const props = defineProps<{
   proposal: ProposalType;
   showSpace: boolean;
   showAuthor: boolean;
+  codeChange?: {
+    ge_state?: string;
+    sealed?: boolean;
+    patch_commitment?: string;
+    build_status?: string;
+  } | null;
 }>();
 
 const { modalAccountOpen } = useModal();
@@ -48,6 +54,7 @@ function handleAcceptTerms() {
         :proposal="proposal"
         :show-author="showAuthor"
         :show-space="showSpace"
+        :code-change="codeChange"
         class="flex-auto mr-4 w-0"
       >
         <template #meta>

@@ -239,11 +239,45 @@ export function useCodeChange(teeUrl?: string) {
         repo_url: p.repo_url,
         pr_branch: p.pr_branch,
         base_branch: p.base_branch,
+        // Sealed-patch metadata (see /ge/submit-sealed-patch)
+        base_commit: p.base_commit,
+        patch_commitment: p.patch_commitment,
+        sealed: p.sealed,
       };
     } catch (e) {
       console.warn('fetchGEProposal failed:', e);
       return null;
     }
+  }
+
+  /**
+   * Fetch every GE proposal in a space in one request. Used by the dashboard
+   * to mark which Snapshot X proposals are code-change proposals without N
+   * round-trips. Returns a Map<proposal_id, minimal-summary>.
+   */
+  async function fetchGEProposalsForSpace(spaceId: string): Promise<Map<string, {
+    ge_state: string;
+    sealed: boolean;
+    patch_commitment?: string;
+    build_status?: string;
+  }>> {
+    const out = new Map<string, any>();
+    try {
+      const res = await fetch(`${serviceUrl.value}/ge/proposals?space=${encodeURIComponent(spaceId)}&limit=200`);
+      if (!res.ok) return out;
+      const data = await res.json();
+      for (const p of (data.proposals || [])) {
+        out.set(String(p.snapshot_proposal_id), {
+          ge_state: p.ge_state,
+          sealed: !!p.sealed,
+          patch_commitment: p.patch_commitment,
+          build_status: p.build?.status,
+        });
+      }
+    } catch (e) {
+      console.warn('fetchGEProposalsForSpace failed:', e);
+    }
+    return out;
   }
 
   return {
@@ -262,6 +296,7 @@ export function useCodeChange(teeUrl?: string) {
     setCodeChangeData,
     releaseCode,
     vetoProposal,
-    fetchGEProposal
+    fetchGEProposal,
+    fetchGEProposalsForSpace
   };
 }
