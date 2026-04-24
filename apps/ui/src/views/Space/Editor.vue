@@ -103,43 +103,62 @@ async function sealPatch(patch: string, enclavePubkeyB64: string): Promise<strin
 }
 
 /**
- * After Snapshot proposal creation succeeds, submit the encrypted patch to the
- * TEE enclave. The TEE decrypts inside, applies the patch on the base commit,
- * builds, and posts the signed attestation to the proposal page.
+ * Pre-flight checks before the user signs the Snapshot X proposal tx. If any
+ * of these fail, we'd rather abort the whole submit than orphan a signed
+ * proposal with no linked TEE build.
  *
- * Voters never see the patch plaintext during voting — they see screenshots +
- * attestation + patch commitment hash.
+ * Returns { pubkey, ciphertext } on success. The caller uses the ciphertext
+ * as-is after the Snapshot X proposal is accepted.
  */
-async function submitSealedCodeChange(spaceId: string) {
-  if (!codeChange.value.enabled) return;
+async function preflightSealCodeChange(): Promise<{ pubkey: string; ciphertext: string } | null> {
+  if (!codeChange.value.enabled) return { pubkey: '', ciphertext: '' };
   const cc = codeChange.value;
+
   if (!cc.baseRepoUrl.trim()) {
     uiStore.addNotification('error', 'Code Change: base repo URL is required');
-    return;
+    return null;
   }
   if (!/^[0-9a-fA-F]{40}$/.test(cc.baseCommit.trim())) {
     uiStore.addNotification('error', 'Code Change: base_commit must be a 40-char hex SHA');
-    return;
+    return null;
   }
-  if (!cc.patch.trim()) {
+  const patch = cc.patch.trim();
+  if (!patch) {
     uiStore.addNotification('error', 'Code Change: patch is empty');
-    return;
+    return null;
+  }
+  if (!/^diff --git /m.test(patch)) {
+    uiStore.addNotification('error', 'Code Change: patch does not look like a git diff');
+    return null;
   }
 
-  // 1. Fetch the enclave's public key (and attestation — proves the key belongs
-  // to a real TEE)
-  let enclavePubkey: string;
   try {
     const r = await fetch(`${TEE_URL}/attestation`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const att = await r.json();
-    if (!att.enclave_pubkey) throw new Error('TEE /attestation did not return enclave_pubkey');
-    enclavePubkey = att.enclave_pubkey;
+    if (!att.enclave_pubkey) throw new Error('no enclave_pubkey in /attestation');
+    const ciphertext = await sealPatch(patch, att.enclave_pubkey);
+    return { pubkey: att.enclave_pubkey, ciphertext };
   } catch (e: any) {
-    uiStore.addNotification('error', `TEE unreachable: ${e.message}`);
-    return;
+    uiStore.addNotification('error', `TEE pre-flight failed: ${e.message}`);
+    return null;
   }
+}
 
-  // 2. Poll Snapshot X indexer for the new proposal ID
+/**
+ * After the Snapshot X proposal is onchain, POST the pre-computed ciphertext
+ * to the TEE. We poll the indexer to find the new proposal_id, then link it.
+ *
+ * The ciphertext was computed in preflightSealCodeChange BEFORE the wallet
+ * signature, so the only way this can fail at this point is a TEE outage
+ * between pre-flight and now (rare) — if it does fail, the Snapshot X proposal
+ * still exists and the user can retry the sealed submission via a direct
+ * script call without re-voting.
+ */
+async function submitSealedCodeChange(spaceId: string, ciphertext: string) {
+  if (!codeChange.value.enabled || !ciphertext) return;
+  const cc = codeChange.value;
+
   uiStore.addNotification('success', 'Looking up new proposal in indexer...');
   let snapshotProposalId: string | null = null;
   for (let i = 0; i < 12; i++) {
@@ -169,16 +188,6 @@ async function submitSealedCodeChange(spaceId: string) {
     return;
   }
 
-  // 3. Encrypt patch client-side
-  let ciphertext: string;
-  try {
-    ciphertext = await sealPatch(cc.patch, enclavePubkey);
-  } catch (e: any) {
-    uiStore.addNotification('error', `Sealing failed: ${e.message}`);
-    return;
-  }
-
-  // 4. POST to /ge/submit-sealed-patch
   try {
     const resp = await fetch(`${TEE_URL}/ge/submit-sealed-patch`, {
       method: 'POST',
@@ -187,7 +196,7 @@ async function submitSealedCodeChange(spaceId: string) {
         ciphertext,
         base_repo: cc.baseRepoUrl.trim(),
         base_commit: cc.baseCommit.trim(),
-        metadata: { title: proposal.value.title },
+        metadata: { title: proposal.value?.title },
         compensation: {
           token_symbol: cc.compensationSymbol || 'USDC',
           amount: cc.compensationAmount || '0',
@@ -492,6 +501,18 @@ async function handleProposeClick() {
 
   sending.value = true;
 
+  // Pre-flight the Code Change path BEFORE asking the wallet to sign, so a
+  // TEE outage / bad inputs don't orphan a signed Snapshot proposal.
+  let sealedCiphertext = '';
+  if (codeChange.value.enabled) {
+    const pf = await preflightSealCodeChange();
+    if (!pf) {
+      sending.value = false;
+      return;
+    }
+    sealedCiphertext = pf.ciphertext;
+  }
+
   try {
     const choices = proposal.value.choices.filter(choice => !!choice);
     const executions = editorExecutions.value
@@ -551,10 +572,11 @@ async function handleProposeClick() {
 
       if (result) {
         uiStore.addNotification('success', 'Proposal created successfully.');
-        // Fire-and-forget: register Code Change with our TEE backend.
-        // We await it so the user sees the "TEE build started" notification before
-        // they leave the editor, but errors don't fail the proposal flow.
-        await submitSealedCodeChange(props.space.id);
+        // Submit the pre-sealed ciphertext. If this fails the proposal still
+        // exists — can be retried manually against the same proposal_id.
+        if (sealedCiphertext) {
+          await submitSealedCodeChange(props.space.id, sealedCiphertext);
+        }
       }
     }
     if (result) {
