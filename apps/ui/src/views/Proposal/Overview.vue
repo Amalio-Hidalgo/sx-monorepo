@@ -118,9 +118,56 @@ const codeChangeData = computed((): CodeChangeData | null => {
       progress: ccd.build_progress,
       log: ccd.build_log,
       error: ccd.build_error || null,
-    }
+    },
+    geState: ccd.ge_state,
+    snapshotProposalId: String(props.proposal.proposal_id ?? props.proposal.id ?? ''),
+    releaseBranch: ccd.release_branch,
+    releasePrUrl: ccd.release_pr_url,
+    // Admins see Publish/Veto controls when the build is ready and the vote
+    // has concluded successfully (or is in the timelock window).
+    canRelease: !!(
+      isSpaceAdmin.value &&
+      ccd.ge_state &&
+      ['ready', 'queued'].includes(ccd.ge_state) &&
+      ['closed', 'active'].includes(props.proposal.state)
+    ),
   };
 });
+
+const TEE_URL = (import.meta as any).env.VITE_TEE_SERVICE_URL
+  || 'https://7d07828e6b5e823257fd7aa98edce140dd92272d-3000.dstack-pha-prod5.phala.network';
+
+async function releaseCodeChange() {
+  const id = codeChangeData.value?.snapshotProposalId;
+  if (!id) return;
+  if (!confirm('Publish the sealed source as a PR on the base repo?')) return;
+  try {
+    const r = await fetch(`${TEE_URL}/ge/proposal/${id}/release`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ open_pr: true }),
+    });
+    const body = await r.json();
+    if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+    await refreshGE();
+  } catch (e: any) {
+    alert(`Release failed: ${e.message}`);
+  }
+}
+
+async function vetoCodeChange() {
+  const id = codeChangeData.value?.snapshotProposalId;
+  if (!id) return;
+  if (!confirm('Veto this proposal? The sealed source will be discarded — this cannot be undone.')) return;
+  try {
+    const r = await fetch(`${TEE_URL}/ge/proposal/${id}/veto`, { method: 'POST' });
+    const body = await r.json();
+    if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+    await refreshGE();
+  } catch (e: any) {
+    alert(`Veto failed: ${e.message}`);
+  }
+}
 
 const isSpaceAdmin = computed(() => {
   const admins = (props.proposal.space.admins || []) as string[];
@@ -633,6 +680,8 @@ onBeforeUnmount(() => destroyAudio());
           :proposal-id="proposal.id"
           :proposal-state="proposal.state"
           :is-admin="isSpaceAdmin"
+          @release="releaseCodeChange"
+          @veto="vetoCodeChange"
         />
       </div>
       <UiMarkdown v-if="proposal.body" class="mb-8" :body="proposal.body" />

@@ -243,6 +243,9 @@ export function useCodeChange(teeUrl?: string) {
         base_commit: p.base_commit,
         patch_commitment: p.patch_commitment,
         sealed: p.sealed,
+        // Post-vote release state
+        release_branch: p.release_branch,
+        release_pr_url: p.release_pr_url,
       };
     } catch (e) {
       console.warn('fetchGEProposal failed:', e);
