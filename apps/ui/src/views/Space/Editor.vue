@@ -110,7 +110,7 @@ async function sealPatch(patch: string, enclavePubkeyB64: string): Promise<strin
  * Returns { pubkey, ciphertext } on success. The caller uses the ciphertext
  * as-is after the Snapshot X proposal is accepted.
  */
-async function preflightSealCodeChange(): Promise<{ pubkey: string; ciphertext: string } | null> {
+async function preflightSealCodeChange(): Promise<{ pubkey: string; ciphertext: string; patchCommitment?: string } | null> {
   if (!codeChange.value.enabled) return { pubkey: '', ciphertext: '' };
   const cc = codeChange.value;
 
@@ -132,15 +132,41 @@ async function preflightSealCodeChange(): Promise<{ pubkey: string; ciphertext: 
     return null;
   }
 
+  let pubkey: string;
+  let ciphertext: string;
   try {
     const r = await fetch(`${TEE_URL}/attestation`);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const att = await r.json();
     if (!att.enclave_pubkey) throw new Error('no enclave_pubkey in /attestation');
-    const ciphertext = await sealPatch(patch, att.enclave_pubkey);
-    return { pubkey: att.enclave_pubkey, ciphertext };
+    pubkey = att.enclave_pubkey;
+    ciphertext = await sealPatch(patch, pubkey);
   } catch (e: any) {
     uiStore.addNotification('error', `TEE pre-flight failed: ${e.message}`);
+    return null;
+  }
+
+  // Dry-run the patch against the base commit. This is the cheapest way to
+  // catch "your diff doesn't apply" BEFORE the wallet sign — the enclave
+  // clones + git-apply-checks, discards, and returns valid/invalid.
+  try {
+    const r = await fetch(`${TEE_URL}/ge/dry-run-sealed-patch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ciphertext,
+        base_repo: cc.baseRepoUrl.trim(),
+        base_commit: cc.baseCommit.trim(),
+      }),
+    });
+    const body = await r.json();
+    if (!body.valid) {
+      uiStore.addNotification('error', `Patch doesn't apply: ${body.error || 'unknown'}`);
+      return null;
+    }
+    return { pubkey, ciphertext, patchCommitment: body.patch_commitment };
+  } catch (e: any) {
+    uiStore.addNotification('error', `Pre-flight dry-run failed: ${e.message}`);
     return null;
   }
 }
@@ -511,6 +537,18 @@ async function handleProposeClick() {
       return;
     }
     sealedCiphertext = pf.ciphertext;
+
+    // Append the cryptographic commitment to the proposal body so voters can
+    // verify on Snapshot X (not just via our TEE endpoint) that the body they
+    // voted on matches the ciphertext the enclave built.
+    if (pf.patchCommitment && !/patch_commitment:/.test(proposal.value.body)) {
+      const header = proposal.value.body.trim() ? '\n\n---\n' : '';
+      proposal.value.body += `${header}**TEE-verified code change (sealed)**\n\n` +
+        `- base_repo: \`${codeChange.value.baseRepoUrl.trim()}\`\n` +
+        `- base_commit: \`${codeChange.value.baseCommit.trim()}\`\n` +
+        `- patch_commitment: \`sha256:${pf.patchCommitment}\`\n` +
+        `- enclave_pubkey: \`${pf.pubkey}\`\n`;
+    }
   }
 
   try {
